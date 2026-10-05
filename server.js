@@ -4,14 +4,66 @@ const mysql = require("mysql2");
 const cors = require("cors");
 const path = require("path");
 const multer = require("multer");
+const fs = require("fs"); // Importado para manejar el sistema de archivos
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Servir la carpeta de imágenes
-app.use("/uploads", express.static(path.join(__dirname, "uploads")));
+// ==========================================
+// CONFIGURACIÓN DE ALMACENAMIENTO (MÉTODO)
+// ==========================================
+// Cambia a 'true' cuando configures tus claves de Cloudinary en el archivo .env
+const USAR_CLOUDINARY = false; 
 
+// 1. Asegurar que la carpeta 'uploads' exista localmente al arrancar el servidor
+const uploadsDir = path.join(__dirname, "uploads");
+if (!fs.existsSync(uploadsDir)) {
+    fs.mkdirSync(uploadsDir, { recursive: true });
+}
+
+// Servir la carpeta de imágenes de forma estática (para acceso local)
+app.use("/uploads", express.static(uploadsDir));
+
+// 2. Configuración de Multer según la opción elegida
+let upload;
+
+if (USAR_CLOUDINARY) {
+    const cloudinary = require("cloudinary").v2;
+    const { CloudinaryStorage } = require("multer-storage-cloudinary");
+
+    cloudinary.config({
+        cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+        api_key: process.env.CLOUDINARY_API_KEY,
+        api_secret: process.env.CLOUDINARY_API_SECRET
+    });
+
+    const cloudinaryStorage = new CloudinaryStorage({
+        cloudinary: cloudinary,
+        params: {
+            folder: "incidencias",
+            allowed_formats: ["jpg", "png", "jpeg"]
+        }
+    });
+
+    upload = multer({ storage: cloudinaryStorage });
+} else {
+    // Almacenamiento local (usando la ruta absoluta asegurada)
+    const localStorage = multer.diskStorage({
+        destination: (req, file, cb) => {
+            cb(null, uploadsDir);
+        },
+        filename: (req, file, cb) => {
+            cb(null, Date.now() + path.extname(file.originalname));
+        }
+    });
+
+    upload = multer({ storage: localStorage });
+}
+
+// ==========================================
+// CONEXIÓN A LA BASE DE DATOS (AIVEN)
+// ==========================================
 const conexion = mysql.createConnection({
     host: process.env.DB_HOST,
     port: process.env.DB_PORT,
@@ -29,16 +81,9 @@ conexion.connect((error) => {
     }
 });
 
-// Configuración de Multer
-const storage = multer.diskStorage({
-    destination: (req, file, cb) => {
-        cb(null, "uploads/");
-    },
-    filename: (req, file, cb) => {
-        cb(null, Date.now() + path.extname(file.originalname));
-    }
-});
-const upload = multer({ storage: storage });
+// ==========================================
+// RUTAS DE LA API
+// ==========================================
 
 // Obtener categorías
 app.get("/categorias", (req, res) => {
@@ -65,7 +110,13 @@ app.get("/incidencias", (req, res) => {
 // Registrar incidencia con imagen
 app.post("/incidencias", upload.single("imagen"), (req, res) => {
     const { categoria_id, descripcion } = req.body;
-    const imagen = req.file ? req.file.filename : null;
+    
+    // Si usa Cloudinary guarda la URL completa (req.file.path), si no, guarda el nombre local del archivo (req.file.filename)
+    let imagen = null;
+    if (req.file) {
+        imagen = USAR_CLOUDINARY ? req.file.path : req.file.filename;
+    }
+
     const sql = "INSERT INTO incidencias (categoria_id, descripcion, imagen) VALUES (?, ?, ?)";
 
     conexion.query(sql, [categoria_id, descripcion, imagen], (error, resultado) => {
