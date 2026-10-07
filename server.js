@@ -132,3 +132,30 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log(`Servidor iniciado en el puerto ${PORT}`);
 });
+
+// Obtener estadísticas agrupadas por categoría
+app.get("/estadisticas/categorias", (req, res) => {
+    const sql = `
+        SELECT c.nombre AS categoria, COUNT(i.id) AS total
+        FROM categorias c
+        LEFT JOIN incidencias i ON c.id = i.categoria_id
+        GROUP BY c.id, c.nombre
+    `;
+    conexion.query(sql, (error, resultado) => {
+        if (error) return res.status(500).json(error);
+        res.json(resultado);
+    });
+});
+
+// Obtener estadísticas agrupadas por estado (Pendiente vs Resuelto)
+app.get("/estadisticas/estados", (req, res) => {
+    const sql = `
+        SELECT estado, COUNT(id) AS total
+        FROM incidencias
+        GROUP BY estado
+    `;
+    conexion.query(sql, (error, resultado) => {
+        if (error) return res.status(500).json(error);
+        res.json(resultado);
+    });
+});
