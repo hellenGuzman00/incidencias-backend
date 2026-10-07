@@ -159,3 +159,28 @@ app.get("/estadisticas/estados", (req, res) => {
         res.json(resultado);
     });
 });
+// Obtener únicamente incidencias RESUELTAS
+app.get("/incidencias/resueltas", (req, res) => {
+    const sql = `
+        SELECT i.id, i.descripcion, i.estado, i.fecha, i.imagen, c.nombre AS categoria
+        FROM incidencias i
+        JOIN categorias c ON i.categoria_id = c.id
+        WHERE i.estado = 'Resuelto'
+        ORDER BY i.fecha DESC
+    `;
+    conexion.query(sql, (error, resultado) => {
+        if (error) return res.status(500).json(error);
+        res.json(resultado);
+    });
+});
+
+// Cambiar estado de una incidencia (Pendiente -> Resuelto)
+app.put("/incidencias/:id/estado", (req, res) => {
+    const { id } = req.params;
+    const { estado } = req.body;
+    const sql = "UPDATE incidencias SET estado = ? WHERE id = ?";
+    conexion.query(sql, [estado, id], (error, resultado) => {
+        if (error) return res.status(500).json(error);
+        res.json({ mensaje: "Estado actualizado correctamente" });
+    });
+});
