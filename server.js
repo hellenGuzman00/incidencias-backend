@@ -128,6 +128,16 @@ app.post("/incidencias", upload.single("imagen"), (req, res) => {
     });
 });
 
+// Eliminar una incidencia por su ID
+app.delete("/incidencias/:id", (req, res) => {
+    const { id } = req.params;
+    const sql = "DELETE FROM incidencias WHERE id = ?";
+    conexion.query(sql, [id], (error, resultado) => {
+        if (error) return res.status(500).json(error);
+        res.json({ mensaje: "Incidencia eliminada correctamente" });
+    });
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log(`Servidor iniciado en el puerto ${PORT}`);
