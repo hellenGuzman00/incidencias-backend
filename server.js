@@ -4,28 +4,36 @@ const mysql = require("mysql2");
 const cors = require("cors");
 const path = require("path");
 const multer = require("multer");
-const fs = require("fs"); // Importado para manejar el sistema de archivos
+const fs = require("fs");
+const bcrypt = require("bcryptjs");
+const jwt = require("jsonwebtoken");
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
 // ==========================================
+// SEGURIDAD: secreto del JWT (viene del .env / variables de Render)
+// ==========================================
+const JWT_SECRET = process.env.JWT_SECRET;
+if (!JWT_SECRET) {
+    console.error("FALTA la variable de entorno JWT_SECRET: el login no va a funcionar.");
+}
+
+// ==========================================
 // CONFIGURACIÓN DE ALMACENAMIENTO (MÉTODO)
 // ==========================================
 // Cambia a 'true' cuando configures tus claves de Cloudinary en el archivo .env
-const USAR_CLOUDINARY = false; 
+const USAR_CLOUDINARY = false;
 
-// 1. Asegurar que la carpeta 'uploads' exista localmente al arrancar el servidor
+// Asegurar que la carpeta 'uploads' exista al arrancar el servidor
 const uploadsDir = path.join(__dirname, "uploads");
 if (!fs.existsSync(uploadsDir)) {
     fs.mkdirSync(uploadsDir, { recursive: true });
 }
 
-// Servir la carpeta de imágenes de forma estática (para acceso local)
 app.use("/uploads", express.static(uploadsDir));
 
-// 2. Configuración de Multer según la opción elegida
 let upload;
 
 if (USAR_CLOUDINARY) {
@@ -48,7 +56,6 @@ if (USAR_CLOUDINARY) {
 
     upload = multer({ storage: cloudinaryStorage });
 } else {
-    // Almacenamiento local (usando la ruta absoluta asegurada)
     const localStorage = multer.diskStorage({
         destination: (req, file, cb) => {
             cb(null, uploadsDir);
@@ -82,6 +89,127 @@ conexion.connect((error) => {
 });
 
 // ==========================================
+// MIDDLEWARES DE AUTENTICACIÓN Y ROLES
+// ==========================================
+
+// Verifica que la petición traiga un JWT válido en "Authorization: Bearer <token>"
+const verificarToken = (req, res, next) => {
+    const header = req.headers["authorization"];
+    if (!header) {
+        return res.status(403).json({ mensaje: "Token requerido" });
+    }
+
+    try {
+        const token = header.startsWith("Bearer ") ? header.slice(7) : header;
+        req.usuario = jwt.verify(token, JWT_SECRET);
+        next();
+    } catch (err) {
+        return res.status(401).json({ mensaje: "Token inválido o expirado" });
+    }
+};
+
+// Solo deja pasar a usuarios con rol Admin (se usa después de verificarToken)
+const soloAdmin = (req, res, next) => {
+    if (req.usuario.rol !== "Admin") {
+        return res.status(403).json({
+            mensaje: "Acceso denegado. Se requieren permisos de Administrador."
+        });
+    }
+    next();
+};
+
+// ==========================================
+// AUTENTICACIÓN
+// ==========================================
+
+// Registro público: SIEMPRE crea usuarios con rol "Usuario".
+// Para crear un Admin se cambia el rol directamente en la base de datos (MySQL Workbench).
+app.post("/registro", async (req, res) => {
+    const nombre = String(req.body.nombre || "").trim();
+    const email = String(req.body.email || "").trim().toLowerCase();
+    const password = String(req.body.password || "");
+
+    if (!nombre || !email || !password) {
+        return res.status(400).json({ mensaje: "Todos los campos son obligatorios" });
+    }
+    if (!email.includes("@")) {
+        return res.status(400).json({ mensaje: "Ingrese un correo válido" });
+    }
+    if (password.length < 6) {
+        return res.status(400).json({ mensaje: "La contraseña debe tener al menos 6 caracteres" });
+    }
+
+    try {
+        const hashedPassword = await bcrypt.hash(password, 10);
+        const sql = "INSERT INTO usuarios (nombre, email, password, rol) VALUES (?, ?, ?, 'Usuario')";
+        conexion.query(sql, [nombre, email, hashedPassword], (error) => {
+            if (error) {
+                if (error.code === "ER_DUP_ENTRY") {
+                    return res.status(409).json({ mensaje: "El correo ya está registrado" });
+                }
+                console.error(error);
+                return res.status(500).json({ mensaje: "Error al registrar el usuario" });
+            }
+            res.json({ mensaje: "Usuario registrado correctamente" });
+        });
+    } catch (e) {
+        console.error(e);
+        res.status(500).json({ mensaje: "Error al procesar el registro" });
+    }
+});
+
+// Inicio de sesión
+app.post("/login", (req, res) => {
+    const email = String(req.body.email || "").trim().toLowerCase();
+    const password = String(req.body.password || "");
+
+    if (!email || !password) {
+        return res.status(400).json({ mensaje: "Ingrese correo y contraseña" });
+    }
+
+    const sql = "SELECT * FROM usuarios WHERE email = ?";
+    conexion.query(sql, [email], async (error, resultado) => {
+        if (error) {
+            console.error(error);
+            return res.status(500).json({ mensaje: "Error del servidor" });
+        }
+
+        try {
+            // Mismo mensaje para "no existe" y "clave incorrecta": no revela qué correos están registrados
+            if (resultado.length === 0) {
+                return res.status(401).json({ mensaje: "Correo o contraseña incorrectos" });
+            }
+
+            const usuario = resultado[0];
+            const passwordValida = await bcrypt.compare(password, usuario.password);
+            if (!passwordValida) {
+                return res.status(401).json({ mensaje: "Correo o contraseña incorrectos" });
+            }
+
+            const token = jwt.sign(
+                { id: usuario.id, nombre: usuario.nombre, rol: usuario.rol },
+                JWT_SECRET,
+                { expiresIn: "8h" }
+            );
+
+            res.json({
+                mensaje: "Inicio de sesión exitoso",
+                token,
+                usuario: {
+                    id: usuario.id,
+                    nombre: usuario.nombre,
+                    email: usuario.email,
+                    rol: usuario.rol
+                }
+            });
+        } catch (e) {
+            console.error(e);
+            res.status(500).json({ mensaje: "Error al iniciar sesión" });
+        }
+    });
+});
+
+// ==========================================
 // RUTAS DE LA API
 // ==========================================
 
@@ -93,12 +221,14 @@ app.get("/categorias", (req, res) => {
     });
 });
 
-// Obtener lista de incidencias
+// Obtener lista de incidencias (incluye el nombre de quien la reportó)
 app.get("/incidencias", (req, res) => {
     const sql = `
-        SELECT i.id, i.descripcion, i.estado, i.fecha, i.imagen, c.nombre AS categoria
+        SELECT i.id, i.descripcion, i.estado, i.fecha, i.imagen,
+               c.nombre AS categoria, u.nombre AS usuario
         FROM incidencias i
         JOIN categorias c ON i.categoria_id = c.id
+        LEFT JOIN usuarios u ON i.usuario_id = u.id
         ORDER BY i.fecha DESC
     `;
     conexion.query(sql, (error, resultado) => {
@@ -107,19 +237,37 @@ app.get("/incidencias", (req, res) => {
     });
 });
 
-// Registrar incidencia con imagen
-app.post("/incidencias", upload.single("imagen"), (req, res) => {
+// Obtener únicamente incidencias RESUELTAS
+app.get("/incidencias/resueltas", (req, res) => {
+    const sql = `
+        SELECT i.id, i.descripcion, i.estado, i.fecha, i.imagen,
+               c.nombre AS categoria, u.nombre AS usuario
+        FROM incidencias i
+        JOIN categorias c ON i.categoria_id = c.id
+        LEFT JOIN usuarios u ON i.usuario_id = u.id
+        WHERE i.estado = 'Resuelto'
+        ORDER BY i.fecha DESC
+    `;
+    conexion.query(sql, (error, resultado) => {
+        if (error) return res.status(500).json(error);
+        res.json(resultado);
+    });
+});
+
+// Registrar incidencia con imagen (requiere sesión iniciada)
+app.post("/incidencias", verificarToken, upload.single("imagen"), (req, res) => {
     const { categoria_id, descripcion } = req.body;
-    
-    // Si usa Cloudinary guarda la URL completa (req.file.path), si no, guarda el nombre local del archivo (req.file.filename)
+    const usuario_id = req.usuario.id;
+
     let imagen = null;
     if (req.file) {
         imagen = USAR_CLOUDINARY ? req.file.path : req.file.filename;
     }
 
-    const sql = "INSERT INTO incidencias (categoria_id, descripcion, imagen) VALUES (?, ?, ?)";
+    const sql =
+        "INSERT INTO incidencias (usuario_id, categoria_id, descripcion, imagen) VALUES (?, ?, ?, ?)";
 
-    conexion.query(sql, [categoria_id, descripcion, imagen], (error, resultado) => {
+    conexion.query(sql, [usuario_id, categoria_id, descripcion, imagen], (error, resultado) => {
         if (error) return res.status(500).json(error);
         res.json({
             mensaje: "Incidencia registrada correctamente",
@@ -128,22 +276,28 @@ app.post("/incidencias", upload.single("imagen"), (req, res) => {
     });
 });
 
-// Eliminar una incidencia por su ID
-app.delete("/incidencias/:id", (req, res) => {
+// Cambiar estado de una incidencia (solo Admin)
+app.put("/incidencias/:id/estado", verificarToken, soloAdmin, (req, res) => {
+    const { id } = req.params;
+    const { estado } = req.body;
+    const sql = "UPDATE incidencias SET estado = ? WHERE id = ?";
+    conexion.query(sql, [estado, id], (error) => {
+        if (error) return res.status(500).json(error);
+        res.json({ mensaje: "Estado actualizado correctamente" });
+    });
+});
+
+// Eliminar una incidencia (solo Admin)
+app.delete("/incidencias/:id", verificarToken, soloAdmin, (req, res) => {
     const { id } = req.params;
     const sql = "DELETE FROM incidencias WHERE id = ?";
-    conexion.query(sql, [id], (error, resultado) => {
+    conexion.query(sql, [id], (error) => {
         if (error) return res.status(500).json(error);
         res.json({ mensaje: "Incidencia eliminada correctamente" });
     });
 });
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-    console.log(`Servidor iniciado en el puerto ${PORT}`);
-});
-
-// Obtener estadísticas agrupadas por categoría
+// Estadísticas agrupadas por categoría
 app.get("/estadisticas/categorias", (req, res) => {
     const sql = `
         SELECT c.nombre AS categoria, COUNT(i.id) AS total
@@ -157,7 +311,7 @@ app.get("/estadisticas/categorias", (req, res) => {
     });
 });
 
-// Obtener estadísticas agrupadas por estado (Pendiente vs Resuelto)
+// Estadísticas agrupadas por estado (Pendiente vs Resuelto)
 app.get("/estadisticas/estados", (req, res) => {
     const sql = `
         SELECT estado, COUNT(id) AS total
@@ -169,28 +323,8 @@ app.get("/estadisticas/estados", (req, res) => {
         res.json(resultado);
     });
 });
-// Obtener únicamente incidencias RESUELTAS
-app.get("/incidencias/resueltas", (req, res) => {
-    const sql = `
-        SELECT i.id, i.descripcion, i.estado, i.fecha, i.imagen, c.nombre AS categoria
-        FROM incidencias i
-        JOIN categorias c ON i.categoria_id = c.id
-        WHERE i.estado = 'Resuelto'
-        ORDER BY i.fecha DESC
-    `;
-    conexion.query(sql, (error, resultado) => {
-        if (error) return res.status(500).json(error);
-        res.json(resultado);
-    });
-});
 
-// Cambiar estado de una incidencia (Pendiente -> Resuelto)
-app.put("/incidencias/:id/estado", (req, res) => {
-    const { id } = req.params;
-    const { estado } = req.body;
-    const sql = "UPDATE incidencias SET estado = ? WHERE id = ?";
-    conexion.query(sql, [estado, id], (error, resultado) => {
-        if (error) return res.status(500).json(error);
-        res.json({ mensaje: "Estado actualizado correctamente" });
-    });
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+    console.log(`Servidor iniciado en el puerto ${PORT} con autenticación JWT`);
 });
