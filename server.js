@@ -209,6 +209,25 @@ app.post("/login", (req, res) => {
     });
 });
 
+// Perfil del usuario autenticado (Guía 8).
+// Valida el token (verificarToken) y devuelve los datos ACTUALES desde la base de datos.
+// Nunca se devuelve la contraseña: se listan las columnas una por una.
+app.get("/perfil", verificarToken, (req, res) => {
+    const sql =
+        "SELECT id, nombre, email, rol, fecha_registro FROM usuarios WHERE id = ?";
+
+    conexion.query(sql, [req.usuario.id], (error, resultado) => {
+        if (error) {
+            console.error(error);
+            return res.status(500).json({ mensaje: "Error al obtener el perfil" });
+        }
+        if (resultado.length === 0) {
+            return res.status(404).json({ mensaje: "Usuario no encontrado" });
+        }
+        res.json(resultado[0]);
+    });
+});
+
 // ==========================================
 // RUTAS DE LA API
 // ==========================================
