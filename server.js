@@ -221,17 +221,42 @@ app.get("/categorias", (req, res) => {
     });
 });
 
-// Obtener lista de incidencias (incluye el nombre de quien la reportó)
+// Obtener incidencias con búsqueda y filtros opcionales (Guía 7):
+//   GET /incidencias?buscar=texto&categoria_id=2&estado=Pendiente
+// Todos los parámetros son opcionales y se pueden combinar.
 app.get("/incidencias", (req, res) => {
-    const sql = `
+    // String(...) evita que un parámetro repetido (?buscar=a&buscar=b) llegue como arreglo
+    const buscar = String(req.query.buscar || "").trim();
+    const categoria_id = String(req.query.categoria_id || "").trim();
+    const estado = String(req.query.estado || "").trim();
+
+    let sql = `
         SELECT i.id, i.descripcion, i.estado, i.fecha, i.imagen,
                c.nombre AS categoria, u.nombre AS usuario
         FROM incidencias i
         JOIN categorias c ON i.categoria_id = c.id
         LEFT JOIN usuarios u ON i.usuario_id = u.id
-        ORDER BY i.fecha DESC
+        WHERE 1=1
     `;
-    conexion.query(sql, (error, resultado) => {
+    // Los valores nunca se concatenan al SQL: van como parámetros (?) para evitar inyección SQL
+    const parametros = [];
+
+    if (buscar) {
+        sql += " AND i.descripcion LIKE ?";
+        parametros.push(`%${buscar}%`);
+    }
+    if (categoria_id) {
+        sql += " AND i.categoria_id = ?";
+        parametros.push(categoria_id);
+    }
+    if (estado) {
+        sql += " AND i.estado = ?";
+        parametros.push(estado);
+    }
+
+    sql += " ORDER BY i.fecha DESC, i.id DESC";
+
+    conexion.query(sql, parametros, (error, resultado) => {
         if (error) return res.status(500).json(error);
         res.json(resultado);
     });
