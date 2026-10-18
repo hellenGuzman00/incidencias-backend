@@ -281,6 +281,62 @@ app.get("/incidencias", (req, res) => {
     });
 });
 
+// Incidencias para exportar a PDF por rango de fechas (Guía 9). Requiere sesión iniciada.
+//   GET /incidencias/exportar?fecha_inicio=2026-10-01&fecha_fin=2026-10-31&tz=-06:00
+// - fecha_inicio y fecha_fin son opcionales: se puede mandar una sola o ninguna (todo el historial).
+// - tz es la zona horaria del usuario. La base de datos guarda la hora en UTC, así que sin esto
+//   un reporte hecho a las 8 pm en El Salvador cae "al día siguiente" y no saldría en el reporte de hoy.
+app.get("/incidencias/exportar", verificarToken, (req, res) => {
+    const fecha_inicio = String(req.query.fecha_inicio || "").trim();
+    const fecha_fin = String(req.query.fecha_fin || "").trim();
+    const tz = String(req.query.tz || "+00:00").trim();
+
+    const formatoFecha = /^\d{4}-\d{2}-\d{2}$/;
+    if ((fecha_inicio && !formatoFecha.test(fecha_inicio)) ||
+        (fecha_fin && !formatoFecha.test(fecha_fin))) {
+        return res.status(400).json({ mensaje: "Formato de fecha inválido (use AAAA-MM-DD)" });
+    }
+    if (!/^[+-](0\d|1[0-4]):[0-5]\d$/.test(tz)) {
+        return res.status(400).json({ mensaje: "Zona horaria inválida (use el formato -06:00)" });
+    }
+    if (fecha_inicio && fecha_fin && fecha_inicio > fecha_fin) {
+        return res.status(400).json({
+            mensaje: "La fecha de inicio no puede ser posterior a la fecha de fin"
+        });
+    }
+
+    // Fecha del reporte según la zona horaria del usuario
+    const fechaLocal = "DATE(CONVERT_TZ(i.fecha, '+00:00', ?))";
+
+    let sql = `
+        SELECT i.id, i.descripcion, i.estado, i.fecha, c.nombre AS categoria
+        FROM incidencias i
+        JOIN categorias c ON i.categoria_id = c.id
+        WHERE 1=1
+    `;
+    // Los valores van como parámetros (?): nunca se concatenan al SQL
+    const parametros = [];
+
+    if (fecha_inicio) {
+        sql += ` AND ${fechaLocal} >= ?`;
+        parametros.push(tz, fecha_inicio);
+    }
+    if (fecha_fin) {
+        sql += ` AND ${fechaLocal} <= ?`;
+        parametros.push(tz, fecha_fin);
+    }
+
+    sql += " ORDER BY i.fecha DESC, i.id DESC";
+
+    conexion.query(sql, parametros, (error, resultado) => {
+        if (error) {
+            console.error(error);
+            return res.status(500).json({ mensaje: "Error al consultar las incidencias" });
+        }
+        res.json(resultado);
+    });
+});
+
 // Obtener únicamente incidencias RESUELTAS
 app.get("/incidencias/resueltas", (req, res) => {
     const sql = `
